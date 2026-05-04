@@ -1,1 +1,6 @@
 /venv
+/.venv
+*.pdf
+Notebook 6 - DP.ipynb
+Notebook 8 - Diferencias Temporales.ipynb
+Notebook_7_Montecarlo.ipynb
