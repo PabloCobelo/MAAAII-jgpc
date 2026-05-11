@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/c/Users/pdcob/AppData/Local/Programs/Python/Python312/python:*)",
+      "Bash(iconv -f UTF-8 -t ASCII//TRANSLIT)"
+    ]
+  }
+}

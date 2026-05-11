@@ -1,0 +1,486 @@
+%
+% Informe Práctica 3 — Aprendizaje por Refuerzo en Pendulum-v1
+% MAAAII · Curso 2025/2026
+%
+\documentclass[12pt,a4paper]{article}
+
+% ── Paquetes ──────────────────────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish]{babel}
+\usepackage{lmodern}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue, citecolor=blue}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{parskip}
+
+% ── Metadatos ─────────────────────────────────────────────────────────────────
+\title{%
+  \textbf{Práctica 3: Aprendizaje por Refuerzo}\\[4pt]
+  \large Modelos Avanzados de Aprendizaje Automático II\\
+  Grado en Inteligencia Artificial · Curso 2025/2026
+}
+\author{Grupo: jgdans -- pdcobelo}
+\date{Mayo 2026}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Descripción del entorno y enfoque general}
+
+El entorno \texttt{Pendulum-v1} de Gymnasium simula un péndulo simple al que se le
+puede aplicar un par (torque) rotacional. El objetivo es mantener el péndulo en
+posición vertical hacia arriba. El espacio de observación es continuo y tridimensional:
+$(\cos\theta,\,\sin\theta,\,\dot\theta)$, donde $\theta$ es el ángulo respecto a la
+posición vertical y $\dot\theta$ es la velocidad angular. La acción también es continua:
+el torque aplicado $\tau \in [-2{,}2]$~N·m.
+
+La función de recompensa es:
+\[
+  r(\theta,\dot\theta,\tau)
+  = -\bigl(\theta^2 + 0{,}1\,\dot\theta^2 + 0{,}001\,\tau^2\bigr),
+\]
+siempre negativa, con máximo 0 cuando el péndulo está perfectamente vertical y estático.
+Cada episodio tiene $T=200$ pasos con $\Delta t=0{,}05$~s, es decir exactamente
+\textbf{10 segundos} de simulación, tal y como exige el enunciado.
+
+Para aplicar algoritmos de RL tabular es necesario discretizar tanto el espacio de
+estados como el de acciones, lo que se describe en la sección siguiente.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Pregunta 1: Discretización aplicada}
+
+\subsection{Estado}
+
+La observación $(\cos\theta,\sin\theta,\dot\theta)$ se comprime a dos variables
+físicamente interpretables:
+
+\begin{enumerate}
+  \item \textbf{Ángulo} $\theta = \operatorname{atan2}(\sin\theta,\cos\theta)
+        \in [-\pi,\pi]$, discretizado en $N_\theta=20$ intervalos iguales.
+  \item \textbf{Velocidad angular} $\dot\theta\in[-8,8]$~rad/s
+        (límites del entorno), discretizada en $N_{\dot\theta}=20$ intervalos.
+\end{enumerate}
+
+Recuperar $\theta$ mediante \texttt{atan2} elimina la discontinuidad en $\pm\pi$
+sin necesidad de trabajar con tres dimensiones de estado.
+
+\subsection{Acción}
+
+El torque continuo $\tau\in[-2{,}2]$ se discretiza en $N_a=9$ valores equiespaciados:
+$\{-2{,}0,\,-1{,}5,\,-1{,}0,\,-0{,}5,\,0{,}0,\,0{,}5,\,1{,}0,\,1{,}5,\,2{,}0\}$.
+
+\subsection{Espacio total y justificación}
+
+El espacio resultado tiene $20\times 20\times 9=3\,600$ pares estado-acción
+(tabla~\ref{tab:discretizacion}).
+
+\begin{table}[H]
+  \centering
+  \caption{Parámetros de discretización.}
+  \label{tab:discretizacion}
+  \begin{tabular}{llcc}
+    \toprule
+    Variable & Rango & Bins & Paso \\
+    \midrule
+    $\theta$ & $[-\pi,\pi]$ & 20 & $\approx 0{,}314$~rad \\
+    $\dot\theta$ & $[-8,8]$~rad/s & 20 & $0{,}8$~rad/s \\
+    $\tau$ & $[-2,2]$~N·m & 9 & $0{,}5$~N·m \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Con 20 bins por dimensión de estado se distinguen los estados cualitativamente
+relevantes (péndulo arriba/abajo, girando rápido/despacio), sin aumentar el espacio
+hasta el punto en que los algoritmos tabulares no converjan en 5\,000 episodios.
+Discretizaciones más gruesas (p.ej.\ 10 bins) fusionarían estados con dinámica
+distinta; más finas (p.ej.\ 50 bins) elevarían el espacio a $22\,500$ pares,
+requiriendo muchos más episodios para visitar cada celda suficientemente.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Pregunta 2: Hiperparámetros}
+
+\subsection{Valores utilizados}
+
+Los mismos hiperparámetros se aplican a los tres algoritmos para que la comparativa
+sea equitativa (tabla~\ref{tab:hparams}).
+
+\begin{table}[H]
+  \centering
+  \caption{Hiperparámetros base de los tres algoritmos.}
+  \label{tab:hparams}
+  \begin{tabular}{clp{8.5cm}}
+    \toprule
+    Parámetro & Valor & Justificación \\
+    \midrule
+    $\gamma$ & 0{,}99 & Pendulum requiere mantener el equilibrio durante 200 pasos;
+                        un $\gamma$ menor penalizaría en exceso los retornos tardíos. \\
+    $\alpha$ & 0{,}10 & Tasa de aprendizaje conservadora y estable (ver ablación). \\
+    $\varepsilon$ & 0{,}10 & Equilibrio entre exploración y explotación (ver ablación). \\
+    Episodios & 5\,000 & Suficientes para observar convergencia con 3\,600 pares. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Selección de $\alpha$ mediante ablación}
+
+Se entrenó Q-Learning durante 3\,000 episodios variando $\alpha$ con $\varepsilon=0{,}1$
+fijo. La métrica es el retorno medio de los últimos 500 episodios de entrenamiento
+(figura~\ref{fig:ablacion_alpha} y tabla~\ref{tab:ablacion_alpha}).
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.7\textwidth]{fig_ablacion_alpha.pdf}
+  \caption{Ablación de $\alpha$: retorno medio en los últimos 500 episodios de
+           entrenamiento (Q-Learning, $\varepsilon=0{,}1$, 3000 ep.).}
+  \label{fig:ablacion_alpha}
+\end{figure}
+
+\begin{table}[H]
+  \centering
+  \caption{Valores de ablación de $\alpha$ ($\varepsilon=0{,}1$).}
+  \label{tab:ablacion_alpha}
+  \begin{tabular}{cc}
+    \toprule
+    $\alpha$ & Retorno (últ.\ 500 ep.) \\
+    \midrule
+    0{,}01 & $-1165{,}58$ \\
+    0{,}05 & $-899{,}74$  \\
+    \textbf{0{,}10} & $\mathbf{-730{,}03}$ \\
+    0{,}20 & $-597{,}33$  \\
+    0{,}50 & $-653{,}68$  \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+$\alpha=0{,}20$ da el mejor retorno de entrenamiento en 3\,000 episodios, lo que indica
+convergencia más rápida. Sin embargo, $\alpha=0{,}50$ ya empeora ($-653$), mostrando
+inestabilidad por sobreactualización. $\alpha=0{,}10$ es la opción más conservadora:
+converge algo más lento pero de forma estable, y sus actualizaciones tienen menor
+varianza, lo que es beneficioso para políticas finales más consistentes a lo largo de
+5\,000 episodios.
+
+\subsection{Selección de $\varepsilon$ mediante ablación}
+
+Se repitió el estudio variando $\varepsilon$ con $\alpha=0{,}1$ fijo
+(figura~\ref{fig:ablacion_eps} y tabla~\ref{tab:ablacion_eps}).
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.7\textwidth]{fig_ablacion_eps.pdf}
+  \caption{Ablación de $\varepsilon$: retorno medio en los últimos 500 episodios de
+           entrenamiento (Q-Learning, $\alpha=0{,}1$, 3000 ep.).}
+  \label{fig:ablacion_eps}
+\end{figure}
+
+\begin{table}[H]
+  \centering
+  \caption{Valores de ablación de $\varepsilon$ ($\alpha=0{,}1$).}
+  \label{tab:ablacion_eps}
+  \begin{tabular}{cc}
+    \toprule
+    $\varepsilon$ & Retorno (últ.\ 500 ep.) \\
+    \midrule
+    0{,}01 & $-514{,}47$ \\
+    0{,}05 & $-589{,}35$ \\
+    \textbf{0{,}10} & $\mathbf{-731{,}81}$ \\
+    0{,}20 & $-826{,}19$ \\
+    0{,}50 & $-961{,}22$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+El retorno de entrenamiento crece monótonamente al reducir $\varepsilon$: con
+$\varepsilon=0{,}01$ el agente apenas explora y se comporta casi como greedy durante
+el entrenamiento, lo que infla artificialmente el retorno medio medido. Sin embargo,
+explorar poco al inicio de Q-Learning puede dejar regiones del espacio de estados sin
+visitar y llevar a mínimos locales. $\varepsilon=0{,}10$ ofrece suficiente exploración
+para cubrir el espacio de estados en 5\,000 episodios. La variante con
+\emph{$\varepsilon$ decreciente} ($0{,}10 \to 0{,}01$) combina lo mejor de ambos
+extremos y se analiza en la sección~\ref{sec:decay}.
+
+\subsection{Efecto del decaimiento de $\varepsilon$}
+\label{sec:decay}
+
+Se entrenó Q-Learning con $\varepsilon$ decreciente de forma lineal desde $0{,}10$
+hasta $0{,}01$ a lo largo de los 5\,000 episodios. Los resultados muestran una mejora
+notable en la política final:
+
+\begin{center}
+\begin{tabular}{lcc}
+  \toprule
+  Configuración & Retorno greedy (media) & Desv. est. \\
+  \midrule
+  Q-Learning $\varepsilon=0{,}1$ fijo  & $-304{,}69$ & $274{,}06$ \\
+  Q-Learning $\varepsilon$ decreciente & $-223{,}20$ & $138{,}87$ \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+El decaimiento permite explorar ampliamente al inicio (mayor cobertura del espacio)
+y explotar la política aprendida al final (mayor retorno greedy). Además reduce la
+varianza, lo que indica una política más consistente.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Pregunta 3: Política final — mejor algoritmo determinista}
+
+Se evaluó la política greedy de cada algoritmo durante 100 episodios con semilla fija.
+Los resultados se recogen en la tabla~\ref{tab:greedy}.
+
+\begin{table}[H]
+  \centering
+  \caption{Retorno greedy final (100 episodios, sin ruido, semilla única).}
+  \label{tab:greedy}
+  \begin{tabular}{lcc}
+    \toprule
+    Algoritmo & Retorno medio & Desv.\ est. \\
+    \midrule
+    Monte Carlo ($\varepsilon$-soft on-policy) & $-499{,}42$ & $146{,}94$ \\
+    SARSA                                      & $-504{,}26$ & $441{,}58$ \\
+    Q-Learning ($\varepsilon$ fijo)            & $-875{,}72$ & $303{,}98$ \\
+    Q-Learning ($\varepsilon$ decreciente)     & $-223{,}20$ & $138{,}87$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Para confirmar la robustez estadística se repitió el entrenamiento con tres semillas
+y se evaluó con 50 episodios greedy por semilla (figura~\ref{fig:multiseed} y
+tabla~\ref{tab:multiseed}).
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.7\textwidth]{fig_multiseed.pdf}
+  \caption{Evaluación multi-semilla (seeds 0, 1, 2): retorno greedy medio $\pm$ std.}
+  \label{fig:multiseed}
+\end{figure}
+
+\begin{table}[H]
+  \centering
+  \caption{Evaluación multi-semilla (política greedy, 50 episodios/semilla).}
+  \label{tab:multiseed}
+  \begin{tabular}{lccc}
+    \toprule
+    Algoritmo & Media & Std & Por semilla (0, 1, 2) \\
+    \midrule
+    MC                          & $-314{,}93$ & $96{,}54$  & $-221{,}3$ / $-447{,}8$ / $-275{,}7$ \\
+    SARSA                       & $-331{,}92$ & $11{,}09$  & $-342{,}3$ / $-316{,}5$ / $-336{,}9$ \\
+    Q-Learning                  & $-485{,}78$ & $164{,}32$ & $-601{,}0$ / $-602{,}9$ / $-253{,}4$ \\
+    QL + $\varepsilon$-decay    & $-330{,}43$ & $103{,}24$ & $-232{,}8$ / $-473{,}3$ / $-285{,}2$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\textbf{Análisis:} con una sola semilla \textbf{Q-Learning con $\varepsilon$ decreciente}
+obtiene el mejor retorno greedy ($-223{,}20$), seguido de Monte Carlo ($-499{,}42$).
+Con múltiples semillas, MC ($-314{,}93$) lidera, con SARSA ($-331{,}92$) y
+QL+$\varepsilon$-decay ($-330{,}43$) prácticamente empatados.
+
+El \textbf{bajo rendimiento de Q-Learning con $\varepsilon$ fijo} tiene dos causas:
+\begin{enumerate}
+  \item \emph{Exploración tardía:} con $\varepsilon=0{,}1$ constante el agente sigue
+        explorando al final del entrenamiento, impidiendo que $Q$ converja hacia la
+        política óptima.
+  \item \emph{Optimismo del} $\max$: la actualización off-policy usa
+        $\max_{a'}Q(s',a')$, sobreestimando el valor de estados poco visitados
+        (inicializados a 0). Esto sesga las actualizaciones en un entorno donde
+        todas las recompensas son negativas.
+\end{enumerate}
+
+Monte Carlo, on-policy y con retornos de episodio completo, estima $Q$ de forma
+insesgada sin sobreestimación del $\max$, resultando en una política robusta a lo
+largo de distintas semillas.
+
+La figura~\ref{fig:heatmaps} muestra los mapas de calor de la política greedy de los
+tres algoritmos entrenados con semilla~0. En cada celda se muestra el torque elegido
+(rojo = torque positivo, azul = torque negativo) en función del ángulo $\theta$ y la
+velocidad angular $\dot\theta$.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{fig_heatmaps.pdf}
+  \caption{Política greedy aprendida por cada algoritmo: mapa de calor del torque
+           elegido en función del estado $(\theta, \dot\theta)$.}
+  \label{fig:heatmaps}
+\end{figure}
+
+MC y SARSA muestran patrones estructurados con zonas claras de torque positivo y
+negativo simétricas respecto al eje central, lo que corresponde a una estrategia
+coherente de control. La política de Q-Learning (con $\varepsilon$ fijo) muestra un
+patrón más irregular, consistente con su peor rendimiento cuantitativo.
+
+\textbf{Conclusión:} \textbf{Monte Carlo} obtiene la política determinista más
+consistente en la evaluación multi-semilla. Q-Learning con $\varepsilon$ decreciente
+es competitivo en la semilla~0 pero su std es elevada.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Pregunta 4: Rendimiento durante el aprendizaje}
+
+La figura~\ref{fig:curvas} muestra las curvas de aprendizaje (retorno medio móvil de
+100 episodios) durante el entrenamiento.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.85\textwidth]{fig_curvas.pdf}
+  \caption{Curvas de aprendizaje para MC, SARSA y Q-Learning ($\varepsilon$ fijo).}
+  \label{fig:curvas}
+\end{figure}
+
+Los retornos medios móviles al final del entrenamiento (episodio~4900) son:
+
+\begin{center}
+\begin{tabular}{lc}
+  \toprule
+  Algoritmo & Retorno (media móvil, ep.\ 4900) \\
+  \midrule
+  Monte Carlo           & $-266{,}32$ \\
+  SARSA                 & $-934{,}10$ \\
+  Q-Learning fijo       & $-478{,}81$ \\
+  Q-Learning decay      & $-226{,}90$ \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Análisis:}
+
+\begin{itemize}
+  \item \textbf{Monte Carlo} obtiene el mejor retorno de entrenamiento al final
+        ($-266{,}32$). Aunque su señal tiene alta varianza (retornos completos de
+        200 pasos), el promedio incremental permite convergencia estable.
+  \item \textbf{Q-Learning con $\varepsilon$ decreciente} es muy competitivo
+        ($-226{,}90$), confirmando que el decaimiento de $\varepsilon$ mejora
+        tanto la política final como el rendimiento durante el aprendizaje.
+  \item \textbf{Q-Learning fijo} tiene retorno de entrenamiento medio
+        ($-478{,}81$) a pesar de su pobre política greedy, porque los episodios
+        de entrenamiento incluyen exploración aleatoria.
+  \item \textbf{SARSA} muestra el peor retorno de entrenamiento ($-934{,}10$),
+        lo que puede reflejar inestabilidad en la estimación on-policy con
+        $\varepsilon$ constante en este entorno de recompensas muy negativas.
+\end{itemize}
+
+\textbf{Conclusión:} \textbf{Monte Carlo} obtiene el mejor rendimiento como
+algoritmo de control (mayor retorno medio durante el aprendizaje). Su carácter
+on-policy y la estimación insesgada mediante retornos reales le permiten aprender
+una política equilibrada desde las primeras iteraciones.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Pregunta 5: Robustez ante perturbaciones}
+
+\subsection{Experimento}
+
+Con probabilidad $p=0{,}05$, la acción elegida por el agente se reemplaza por
+$[-2{,}0]$ o $[2{,}0]$ (torque máximo aleatorio). Los resultados se muestran en la
+tabla~\ref{tab:ruido} y la figura~\ref{fig:robustez}.
+
+\begin{table}[H]
+  \centering
+  \caption{Retorno greedy con y sin ruido ($p=0{,}05$).
+           $\Delta=$ retorno con ruido $-$ retorno sin ruido.}
+  \label{tab:ruido}
+  \begin{tabular}{lrrr}
+    \toprule
+    Algoritmo & Sin ruido & Con ruido & $\Delta$ \\
+    \midrule
+    Monte Carlo   & $-499{,}42$ & $-518{,}48$ & $-19{,}05$ \\
+    SARSA         & $-504{,}26$ & $-536{,}03$ & $-31{,}77$ \\
+    Q-Learning    & $-875{,}72$ & $-831{,}69$ & $+44{,}03$ \\
+    QL robusto    & $-409{,}19$ & $-462{,}37$ & $-53{,}18$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.75\textwidth]{fig_robustez.pdf}
+  \caption{Comparación de retorno greedy con y sin ruido para cada algoritmo.}
+  \label{fig:robustez}
+\end{figure}
+
+\subsection{¿Qué algoritmo es más robusto?}
+
+Atendiendo a la caída absoluta de rendimiento al introducir ruido, \textbf{Monte Carlo}
+es el más robusto ($|\Delta|=19{,}05$), seguido de SARSA ($|\Delta|=31{,}77$).
+
+El $\Delta>0$ de Q-Learning es aparentemente paradójico: el rendimiento \emph{mejora}
+con ruido. La explicación es que la política greedy de Q-Learning con $\varepsilon$
+fijo es de baja calidad ($-875{,}72$), y los torques extremos aleatorios ($\pm2$~N·m)
+aportan de forma accidental la energía necesaria para elevar el péndulo, compensando
+el defecto de la política. En otras palabras, el ruido ``ayuda'' a una política
+deficiente; la política no es intrínsecamente robusta.
+
+Comparando solo los algoritmos con buen rendimiento base,
+\textbf{Monte Carlo es el más robusto}.
+
+\subsection{Adaptación del aprendizaje: domain randomization}
+
+Se reentrenó Q-Learning inyectando el mismo tipo de ruido ($p=0{,}05$) durante el
+propio entrenamiento (\emph{domain randomization}):
+
+\begin{center}
+\begin{tabular}{lrrr}
+  \toprule
+  Variante & Sin ruido & Con ruido ($p=0{,}05$) & $\Delta$ \\
+  \midrule
+  Q-Learning original & $-875{,}72$ & $-831{,}69$ & $+44{,}03$ \\
+  Q-Learning robusto  & $-409{,}19$ & $-462{,}37$ & $-53{,}18$ \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+El Q-Learning robusto mejora el retorno base en $\sim\!470$ puntos y pasa a tener
+el mejor retorno con ruido entre todos los agentes evaluados ($-462{,}37$).
+
+\textbf{¿Por qué funciona?} El ruido en entrenamiento actúa como
+\textbf{exploración adicional dirigida}: fuerza visitas a estados de alta energía
+(péndulo caído, velocidad angular extrema) y obliga al agente a aprender a
+recuperarse. Esto amplía la cobertura del espacio de estados y genera una tabla $Q$
+más densa en regiones críticas, explicando también la mejora en la política greedy
+sin ruido.
+
+\textbf{Otras estrategias posibles para mejorar la robustez:}
+\begin{itemize}
+  \item \textbf{Modelar la incertidumbre explícitamente:} tratar el ruido como
+        parte del modelo de transición (RL robusto, Interval MDP).
+  \item \textbf{Ensemble de políticas:} entrenar múltiples agentes con distintas
+        realizaciones de ruido y combinar sus políticas mediante voto.
+  \item \textbf{$\varepsilon$ decreciente combinado con domain randomization:}
+        exploración amplia al inicio, ruido de perturbación realista durante todo
+        el entrenamiento y explotación al final.
+\end{itemize}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Conclusiones}
+
+\begin{enumerate}
+  \item La discretización $20\times20$ de estado y 9 acciones ($3\,600$ pares
+        en total) ofrece resolución suficiente para distinguir la dinámica del péndulo
+        y converge en $5\,000$ episodios.
+  \item Los hiperparámetros $\alpha=0{,}1$ y $\varepsilon=0{,}1$ se justifican
+        mediante ablación: $\alpha$ mayor converge más rápido pero con mayor
+        varianza; $\varepsilon$ menor infla el retorno de entrenamiento sin garantizar
+        mayor calidad de política. La variante con $\varepsilon$ decreciente combina
+        exploración amplia e initial con explotación final.
+  \item En evaluación de política final, \textbf{Monte Carlo} es el más consistente
+        a lo largo de múltiples semillas. Q-Learning con $\varepsilon$ decreciente
+        es el mejor en semilla única.
+  \item \textbf{Monte Carlo} obtiene el mejor rendimiento durante el aprendizaje
+        (mayor retorno medio de entrenamiento). Q-Learning con $\varepsilon$
+        decreciente es competitivo.
+  \item \textbf{Monte Carlo} es el más robusto ante perturbaciones (menor caída
+        relativa). El domain randomization en Q-Learning lo convierte en el agente
+        con mayor retorno absoluto bajo ruido.
+\end{enumerate}
+
+\end{document}
